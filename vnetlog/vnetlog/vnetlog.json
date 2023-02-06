@@ -1,0 +1,8 @@
+{
+  "Author": "veyn",
+  "Name": "Network reversing toolkit",
+  "Punchline": "Log, decode and analyze network messages",
+  "Description": "A collection of utilities for reversing network messages.",
+  "InternalName": "vnetlog",
+  "ApplicableVersion": "any"
+}

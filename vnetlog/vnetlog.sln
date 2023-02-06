@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.4.33205.214
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "vnetlog", "vnetlog\vnetlog.csproj", "{22EF6083-B8C1-46DC-BAF8-FFD9F76C3C6B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{22EF6083-B8C1-46DC-BAF8-FFD9F76C3C6B}.Debug|x64.ActiveCfg = Debug|x64
+		{22EF6083-B8C1-46DC-BAF8-FFD9F76C3C6B}.Debug|x64.Build.0 = Debug|x64
+		{22EF6083-B8C1-46DC-BAF8-FFD9F76C3C6B}.Release|x64.ActiveCfg = Release|x64
+		{22EF6083-B8C1-46DC-BAF8-FFD9F76C3C6B}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F4AA702C-869D-44DC-A1A0-6CB909B4ACFC}
+	EndGlobalSection
+EndGlobal
