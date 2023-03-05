@@ -31,6 +31,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        _wndMain.Dispose();
         WindowSystem.RemoveAllWindows();
         _cmdMgr.RemoveHandler("/vnetlog");
     }
