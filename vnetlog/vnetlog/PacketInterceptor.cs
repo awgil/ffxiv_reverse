@@ -34,7 +34,7 @@ unsafe class PacketInterceptor : IDisposable
     {
         _decoder = decoder;
 
-        var fetchAddress = Service.SigScanner.ScanText("E8 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? 44 0F B6 64 24");
+        var fetchAddress = Service.SigScanner.ScanText("E8 ?? ?? ?? ?? 84 C0 0F 85 ?? ?? ?? ?? 48 8D 35");
         Service.LogInfo($"Fetch address: 0x{fetchAddress:X}");
         _fetchHook = Hook<FetchReceivedPacketDelegate>.FromAddress(fetchAddress, FetchReceivedPacketDetour);
     }
