@@ -1,4 +1,5 @@
 ﻿using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Common.Math;
 using System;
 using System.Runtime.InteropServices;
 
@@ -739,6 +740,31 @@ public unsafe struct UpdateHater
     public ushort pad2;
     public fixed ulong Entries[32]; // UpdateHateEntry[32]
     public uint pad3;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public unsafe struct SpawnObject
+{
+    public byte Index;
+    public byte Kind;
+    public byte u2_state;
+    public byte u3;
+    public uint DataID;
+    public uint InstanceID;
+    public uint u_levelID;
+    public uint DutyID;
+    public uint OwnerID;
+    public uint u_gimmickID;
+    public float Scale;
+    public ushort u20;
+    public ushort Rotation;
+    public ushort FateID;
+    public ushort EventState; // for common gameobject field
+    public uint EventObjectState; // for eventobject-specific field
+    public uint u_modelID;
+    public Vector3 Position;
+    public ushort u3C;
+    public ushort u3E;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]

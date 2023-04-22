@@ -71,6 +71,25 @@ unsafe class PacketInterceptor : IDisposable
                 TargetString = PacketDecoder.ObjStr(outData->IPC->TargetActor),
                 PayloadStrings = decoded ?? new(PacketDecoder.ByteArrayStr(payloadStart, payloadSize))
             });
+
+            // HACK for replacing sastasha's shortcut eobj with custom (eg wormholes), then open recommendations actor control with eobjanim
+            //if (opcode == 0x02D1 && *(uint*)(payloadStart + 4) == 0x1EB0CF)
+            //{
+            //    Service.LogError($"foo doing rep {*(uint*)(payloadStart + 0x2C)}");
+            //    *(uint*)(payloadStart + 4) = 0x1EA1E1;
+            //    *(uint*)(payloadStart + 0x2C) = 0;
+            //    _hackID = *(uint*)(payloadStart + 8);
+            //}
+            //if (opcode == 0x0256 && *(ushort*)payloadStart == 512 && _hackID != 0)
+            //{
+            //    Service.LogError($"replacing openrecs for {_hackID:X}");
+            //    outData->IPC->SourceActor = _hackID;
+            //    outData->IPC->TargetActor = _hackID;
+            //    *(ushort*)payloadStart = 413;
+            //    *(uint*)(payloadStart + 4) = 1;
+            //    *(uint*)(payloadStart + 8) = 2;
+            //    _hackID = 0;
+            //}
         }
         return res;
     }

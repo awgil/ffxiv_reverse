@@ -4,7 +4,6 @@ using System.Numerics;
 using Netlog.ServerIPC;
 using System.Text;
 using Dalamud.Memory;
-using Dalamud.Utility;
 
 namespace Netlog;
 
@@ -159,7 +158,7 @@ public unsafe class PacketDecoder
     {
         var details = category switch
         {
-            ActorControlCategory.CancelCast => $"{ActionStr((ActionType)p2, p3)}, interrupted={p4 == 1}", // note: some successful boss casts have this message on completion, seen param1=param4=0, param2=1; param1 is related to cast time?..
+            ActorControlCategory.CancelCast => $"{LogMsgStr(p1)}; action={ActionStr((ActionType)p2, p3)}, interrupted={p4 == 1}", // note: some successful boss casts have this message on completion
             ActorControlCategory.RecastDetails => $"group {p1}: {p2 * 0.01f:f2}/{p3 * 0.01f:f2}s",
             ActorControlCategory.Cooldown => $"group {p1}: action={ActionStr(ActionType.Spell, p2)}, time={p3 * 0.01f:f2}s",
             ActorControlCategory.GainEffect => $"{StatusStr(p1)}: extra={p2:X4}",
@@ -229,6 +228,16 @@ public unsafe class PacketDecoder
         return res;
     }
 
+    public TextNode DecodeSpawnObject(SpawnObject* p)
+    {
+        var res = new TextNode($"#{p->Index} {p->DataID:X} <{p->InstanceID:X}>");
+        res.AddChild($"Kind={p->Kind}, u2={p->u2_state}, u3={p->u3}, u20={p->u20}, tail={p->u3C:X2} {p->u3E:X2}");
+        res.AddChild($"LevelID={p->u_levelID}, GimmickID={p->u_gimmickID}, DutyID={p->DutyID}, FateID={p->FateID}");
+        res.AddChild($"Pos={Vec3Str(p->Position)}, Rot={IntToFloatAngleDeg(p->Rotation):f1}deg, Scale={p->Scale:f3}");
+        res.AddChild($"Model={p->u_modelID}, EState={p->EventState}, EObjState={p->EventObjectState}");
+        return res;
+    }
+
     public TextNode DecodeUpdateClassInfo(UpdateClassInfo* p, string extra = "") => new($"L{p->CurLevel}/{p->ClassLevel}/{p->SyncedLevel} {ClassJobAbbrev(p->ClassID)}, exp={p->CurExp}+{p->RestedExp}{extra}");
 
     public TextNode DecodeWaymarkPreset(WaymarkPreset* p)
@@ -275,6 +284,7 @@ public unsafe class PacketDecoder
         PacketID.ActorCast when (ActorCast*)payload is var p => DecodeActorCast(p),
         PacketID.UpdateHate when (UpdateHate*)payload is var p => DecodeUpdateHate(p),
         PacketID.UpdateHater when (UpdateHater*)payload is var p => DecodeUpdateHater(p),
+        PacketID.SpawnObject when (SpawnObject*)payload is var p => DecodeSpawnObject(p),
         PacketID.UpdateClassInfo when (UpdateClassInfo*)payload is var p => DecodeUpdateClassInfo(p),
         PacketID.UpdateClassInfoEureka when (UpdateClassInfoEureka*)payload is var p => DecodeUpdateClassInfo(&p->Data, $", rank={p->Rank}/{p->Element}/{p->u2}, pad={p->pad3:X2}"),
         PacketID.UpdateClassInfoBozja when (UpdateClassInfoBozja*)payload is var p => DecodeUpdateClassInfo(&p->Data, $", rank={p->Rank}, pad={p->pad1:X2}{p->pad2:X4}"),
