@@ -170,6 +170,7 @@ public unsafe class PacketDecoder
             ActorControlCategory.SetTarget => $"{ObjStr(targetID)}",
             ActorControlCategory.SetAnimationState => $"#{p1} = {p2}",
             ActorControlCategory.SetModelState => $"{p1}",
+            ActorControlCategory.ForcedMovement => $"dest={Vec3Str(IntToFloatCoords((ushort)p1, (ushort)p2, (ushort)p3))}, rot={IntToFloatAngleDeg((ushort)p4):f1}deg over {p5 * 0.0001:f4}s, type={p6}",
             ActorControlCategory.PlayActionTimeline => $"{p1:X4}",
             ActorControlCategory.EObjSetState => $"{p1:X4}, housing={(p3 != 0 ? p4 : null)}",
             ActorControlCategory.EObjAnimation => $"{p1:X4} {p2:X4}",

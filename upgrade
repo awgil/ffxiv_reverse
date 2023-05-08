@@ -1,0 +1,32 @@
+1. Open new binary, wait for analysis
+2. Names (funcs, globals, vtables): run (alt-f7) idarename.py, fix failures manually
+3. Structures & enums: build & run CExporter, import _arrays.h
+4. EXD
+5. Network
+6. Globals
+7. Signatures
+
+consider this flow:
+1. c# parses ffxivclientstructs and extracts to yaml:
+ - enums
+ - structs (normal + dependent template specializations)
+  - fields: offset+name+type
+  - methods: name+sig+type
+  - vtable sig
+  - vfuncs: name+ordinal+type
+ - globals (sigs+type)
+2. c# parses lumina and extracts to yaml:
+ - enum SheetID
+ - sheets
+  - bitfield enums
+  - structs
+3. ida-python parses data.yml + ffxivclientstruct yaml + lumina yaml + custom-patches yaml
+ - create enums (from ffxiv/lumina)
+ - create local types / structs (ordering!) (from ffxiv/lumina)
+ - create globals
+  - ea from data.yml (alt: sig from ffxiv)
+  - type from ffxiv
+ - rename global funcs & methods
+  - ea from data.yml (alt: sig from ffxiv)
+  - type from ffxiv
+ - vtables!

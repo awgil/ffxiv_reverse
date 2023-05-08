@@ -1,0 +1,3 @@
+[submodule "idapopulate/FFXIVClientStructs"]
+	path = idapopulate/FFXIVClientStructs
+	url = https://github.com/awgil/FFXIVClientStructs.git
