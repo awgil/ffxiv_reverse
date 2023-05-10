@@ -3,3 +3,5 @@ obj/
 bin/
 *.user
 logs/
+idbtoolkit/info.yml
+idbtoolkit/__pycache__/

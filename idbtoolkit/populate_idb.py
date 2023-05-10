@@ -145,6 +145,7 @@ def populate_function_names(data):
 		ensure_function_at(ea, "function") # if function is not referenced from anywhere, define one manually
 		set_custom_name(ea, g['name'], g['address'])
 
+# TODO: calculate masks for bitfield values properly
 def populate_enums(data):
 	msg('** Populating exported enums **')
 
@@ -170,6 +171,7 @@ def populate_enums(data):
 			except Exception as e:
 				msg(f'Enum error: {e}')
 
+# TODO: have c# app generate correctly ordered list
 def populate_vtables(data):
 	# vtable population is done in several passes
 	Vtable = collections.namedtuple("VTable", "primaryEA secondaryEAs vFuncs base")
@@ -316,6 +318,9 @@ def populate_vtables(data):
 	pass3()
 	return vtables
 
+# TODO: if all fields are at offset 0, just create union directly
+# TODO: if all fields in the nested union are of the same type, don't create a union, instead just add member comment with alt names
+# TODO: have c# app generate correctly ordered list
 def populate_structs(data):
 	# structure creation is done in two passes
 	res = {} # base/substruct always ordered before referencing struct; key = class name

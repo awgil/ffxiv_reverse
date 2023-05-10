@@ -1,6 +1,7 @@
 ﻿using YamlDotNet.Serialization.NamingConventions;
 using YamlDotNet.Serialization;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace idapopulate;
 
@@ -142,6 +143,28 @@ internal class Result
     {
         var data = new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build().Serialize(this);
         File.WriteAllText(path, data);
+    }
+
+    public void DumpNestedUnions()
+    {
+        foreach (var (name, s) in Structs)
+        {
+            if (s.Fields.All(f => f.Offset == 0))
+                continue; // it's a simple union, we handle that on IDA side
+
+            foreach (var g in s.Fields.GroupBy(f => f.Offset))
+            {
+                if (g.Count() > 1)
+                {
+                    var firstType = g.First().Type;
+                    if (!g.All(f => f.Type == firstType))
+                    {
+                        Debug.WriteLine($"Nested union found at {name}+0x{g.Key:X}: {string.Join(", ", g.Select(f => f.Name))}");
+                    }
+                    // else: all elements of the same type, we don't create union for that on IDA side
+                }
+            }
+        }
     }
 
     public bool ValidateUniqueEaName()

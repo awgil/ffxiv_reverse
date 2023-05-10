@@ -10,7 +10,7 @@ namespace idapopulate;
 
 internal static class CSImportExt
 {
-    public static string WithoutPrefix(this string str, string prefix) => str.StartsWith(prefix) ? str.Substring(prefix.Length) : str;
+    public static string WithoutPrefix(this string str, string prefix, string sep) => str == prefix ? "" : str.StartsWith(prefix + sep) ? str.Substring(prefix.Length + sep.Length) : str;
 
     // if [FieldOffset] is not specified, assume sequential layout...
     public static int GetFieldOffset(this FieldInfo fi) => fi.GetCustomAttribute<FieldOffsetAttribute>()?.Value ?? Marshal.OffsetOf(fi.DeclaringType!, fi.Name).ToInt32();
@@ -63,6 +63,8 @@ internal class CSImport
     private static bool IsTypeExportable(Type type)
     {
         if (type.FullName == null)
+            return false;
+        if (type.GetCustomAttribute<ObsoleteAttribute>() != null)
             return false;
         if (!type.FullName.StartsWith("FFXIVClientStructs.FFXIV.") && !type.FullName.StartsWith("FFXIVClientStructs.Havok."))
             return false;
@@ -266,7 +268,7 @@ internal class CSImport
 
     private string TypeNameComplex(Type type)
     {
-        var baseName = type.DeclaringType != null ? TypeNameComplex(type.DeclaringType) : type.Namespace?.WithoutPrefix("FFXIVClientStructs.").WithoutPrefix("FFXIV.").WithoutPrefix("Havok.").Replace(".", "::") ?? "";
+        var baseName = type.DeclaringType != null ? TypeNameComplex(type.DeclaringType) : type.Namespace?.WithoutPrefix("FFXIVClientStructs", ".").WithoutPrefix("FFXIV", ".").WithoutPrefix("Havok", ".").Replace(".", "::") ?? "";
         var leafName = type.Name;
         if (type.IsGenericType)
         {
@@ -281,7 +283,7 @@ internal class CSImport
         // hack for std
         if (fullName.StartsWith("STD::Std"))
         {
-            fullName = fullName.WithoutPrefix("STD::Std");
+            fullName = fullName.WithoutPrefix("STD::Std", "");
             fullName = "std::"+ fullName.Substring(0, 1).ToLower() + fullName.Substring(1);
         }
         return fullName;
