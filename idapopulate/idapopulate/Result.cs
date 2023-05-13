@@ -1,7 +1,9 @@
 ﻿using YamlDotNet.Serialization.NamingConventions;
 using YamlDotNet.Serialization;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
+using System.Text.Json;
+using System.Collections.Specialized;
+using System.Xml.Linq;
 
 namespace idapopulate;
 
@@ -20,26 +22,26 @@ internal class Result
 {
     public class EnumValue
     {
-        public string Name = "";
-        public long Value;
+        public string Name { get; set; } = "";
+        public long Value { get; set; }
 
         public override string ToString() => $"{Name} = 0x{Value:X}";
     }
 
     public class Enum
     {
-        public bool IsBitfield;
-        public bool IsSigned;
-        public int Width;
-        public List<EnumValue> Values = new(); // sorted by value
+        public bool IsBitfield { get; set; }
+        public bool IsSigned { get; set; }
+        public int Width { get; set; }
+        public List<EnumValue> Values { get; set; } = new(); // sorted by value
 
         public override string ToString() => $"{(IsSigned ? "signed" : "unsigned")} {Width}-byte-wide {(IsBitfield ? "bitfield" : "enum")}";
     }
 
     public class Address
     {
-        public string Sig;
-        public int SigOffset;
+        public string Sig { get; set; }
+        public int SigOffset { get; set; }
 
         public Address(string sig, int sigOffset = 0)
         {
@@ -50,120 +52,221 @@ internal class Result
         public override string ToString() => $"'{Sig}' +{SigOffset}";
     }
 
-    public class FuncArg
-    {
-        public string Type = "";
-        public string Name = "";
-
-        public override string ToString() => $"{Type} {Name}";
-    }
-
-    public class FuncSig
-    {
-        public string RetType = "";
-        public List<FuncArg> Arguments = new();
-
-        public override string ToString() => $"({string.Join(", ", Arguments)}) -> {RetType}";
-    }
-
     public class Function
     {
-        public string Name = "";
-        public Address? Address;
-        public FuncSig? Signature;
+        public const string Placeholder = "^";
 
-        public override string ToString() => $"auto {Name}{Signature} @ {Address}";
+        public List<string> Names { get; set; } = new(); // contains at least one element
+        public string Type { get; set; } // has placeholder where cconv/name/pointer could be added
+        public Address? Address { get; set; }
+
+        public Function(string name, string type = "", Address? address = null)
+        {
+            Names.Add(name);
+            Type = type;
+            Address = address;
+        }
+
+        public override string ToString() => $"{Names.First()}: {Type} @ {Address}";
+    }
+
+    // instances of vtables used by derived classes via multiple inheritance - contain same functions as base class with custom implementations; this pointer is shifted
+    public class SecondaryVTable
+    {
+        public ulong Ea { get; set; }
+        public string Derived { get; set; } = "";
+        public int Offset { get; set; } // <= 0 if unknown, otherwise >0 (offset of an (in)direct base class inside derived)
+
+        public override string ToString() => $"0x{Ea:X} for {Derived} +0x{Offset:X}";
     }
 
     public class VTable
     {
-        public ulong Ea;
-        public Address? Address;
-        public SortedDictionary<uint, Function> VFuncs = new();
+        public string Base { get; set; } = ""; // empty if this is a root of the class hierarchy
+        public ulong Ea { get; set; }
+        public Address? Address { get; set; }
+        public SortedDictionary<uint, Function> VFuncs { get; set; } = new();
+        public List<SecondaryVTable> Secondary { get; set; } = new();
 
         public override string ToString() => $"0x{Ea:X} {Address}";
     }
 
-    public class SecondaryVTable
-    {
-        public ulong Ea;
-        public string Base = "";
-
-        public override string ToString() => $"0x{Ea:X} {Base}";
-    }
-
     public class StructBase
     {
-        public string Type = "";
-        public int Offset;
-        public int Size;
+        public string Type { get; set; } = "";
+        public int Offset { get; set; }
+        public int Size { get; set; }
 
         public override string ToString() => $"[0x{Offset:X}] {Type} (size=0x{Size:X})";
     }
 
     public class StructField
     {
-        public string Name = "";
-        public string Type = "";
-        public bool IsStruct; // if true, type is another struct that has to be defined before this struct
-        public int Offset;
-        public int ArrayLength; // 0 if not an array
-        public int Size;
+        public List<string> Names { get; set; } = new(); // contains at least one element
+        public string Type { get; set; }
+        public bool IsStruct { get; set; } // if true, type is another struct that has to be defined before this struct
+        public int Offset { get; set; }
+        public int ArrayLength { get; set; } // 0 if not an array
+        public int Size { get; set; }
 
-        public override string ToString() => $"[0x{Offset:X}] {Type} {Name}{(ArrayLength > 0 ? $"[{ArrayLength}]" : "")}{(IsStruct ? " (struct)" : "")} (size=0x{Size:X})";
+        public StructField(string name, string type, bool isStruct, int offset, int arrayLength, int size)
+        {
+            Names.Add(name);
+            Type = type;
+            IsStruct = isStruct;
+            Offset = offset;
+            ArrayLength = arrayLength;
+            Size = size;
+        }
+
+        public override string ToString() => $"[0x{Offset:X}] {Type} {Names.First()}{(ArrayLength > 0 ? $"[{ArrayLength}]" : "")}{(IsStruct ? " (struct)" : "")} (size=0x{Size:X})";
     }
 
     public class Struct
     {
-        public int Size;
-        public VTable? PrimaryVTable;
-        public List<SecondaryVTable> SecondaryVTables = new();
-        public List<StructBase> Bases = new(); // sorted by offset
-        public List<StructField> Fields = new(); // sorted by offset, non overlapping with bases
+        public bool IsUnion { get; set; }
+        public int Size { get; set; }
+        public VTable? VTable { get; set; }
+        public List<StructBase> Bases { get; set; } = new(); // sorted by offset
+        public List<StructField> Fields { get; set; } = new(); // sorted by offset, non overlapping with bases
 
-        public override string ToString() => $"size=0x{Size:X}";
+        public override string ToString() => $"{(IsUnion ? "union" : "struct")} size=0x{Size:X}";
     }
 
     public class Global
     {
-        public string Type = "";
-        public string Name = "";
-        public Address? Address;
-        public int Size;
+        public List<string> Names { get; set; } = new(); // contains at least one element
+        public string Type { get; set; }
+        public int Size { get; set; }
+        public Address? Address { get; set; }
 
-        public override string ToString() => $"{Type} {Name} (size=0x{Size:X}) @ {Address}";
+        public Global(string name, string type, int size, Address? address = null)
+        {
+            Names.Add(name);
+            Type = type;
+            Size = size;
+            Address = address;
+        }
+
+        public override string ToString() => $"{Type} {Names.First()} (size=0x{Size:X}) @ {Address}";
     }
 
-    public SortedDictionary<string, Enum> Enums = new();
-    public SortedDictionary<string, Struct> Structs = new();
-    public SortedDictionary<ulong, Global> Globals = new(); // key = ea
-    public SortedDictionary<ulong, Function> Functions = new(); // key = ea
+    public SortedDictionary<string, Enum> Enums { get; set; } = new();
+    public OrderedDictionary Structs { get; set; } = new(); // name -> Struct
+    public SortedDictionary<ulong, Global> Globals { get; set; } = new(); // key = ea
+    public SortedDictionary<ulong, Function> Functions { get; set; } = new(); // key = ea
 
-    public void Write(string path)
+    public Struct? GetStruct(string name) => (Struct?)Structs[name];
+    public IEnumerable<(string Name, Struct Data)> EnumerateStructs()
     {
-        var data = new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build().Serialize(this);
+        var e = Structs.GetEnumerator();
+        while (e.MoveNext())
+            yield return ((string)e.Key, (Struct)e.Value!);
+    }
+
+    public void Normalize()
+    {
+        // sort structs in dependency order: ensure base classes or substructures are ordered before their users
+        Dictionary<string, HashSet<string>> deps = new();
+        Func<string, HashSet<string>> depsFor = n =>
+        {
+            if (!deps.TryGetValue(n, out var v))
+                deps.Add(n, v = new());
+            return v;
+        };
+
+        foreach (var (n, s) in EnumerateStructs())
+        {
+            var curDeps = depsFor(n);
+            foreach (var b in s.Bases)
+                curDeps.Add(b.Type);
+            foreach (var f in s.Fields.Where(f => f.IsStruct))
+                curDeps.Add(f.Type);
+            if (s.VTable != null)
+                foreach (var v in s.VTable.Secondary)
+                    depsFor(v.Derived).Add(n);
+        }
+
+        OrderedDictionary reordered = new();
+        foreach (var (n, _) in EnumerateStructs())
+            NormalizeAddAfterSubstructs(reordered, deps, n);
+        Structs = reordered;
+
+        // calculate secondary base offsets
+        foreach (var (n, s) in EnumerateStructs())
+        {
+            if (s.VTable == null)
+                continue;
+            foreach (var v in s.VTable.Secondary)
+            {
+                v.Offset = NormalizeCalculateBaseOffset(v.Derived, n);
+                if (v.Offset <= 0)
+                {
+                    Debug.WriteLine($"Could not find {n} among secondary bases of {v.Derived}");
+                }
+            }
+        }
+
+        // ensure structures that have bases with vtables also have one
+        foreach (var (n, s) in EnumerateStructs().Where(kv => kv.Data.Bases.Count > 0 && kv.Data.VTable == null && GetStruct(kv.Data.Bases[0].Type)!.VTable != null))
+        {
+            Debug.WriteLine($"Structure {n} has no vtable, but its base {s.Bases[0].Type} has one");
+            s.VTable = new() { Base = s.Bases[0].Type };
+            s.Size = Math.Max(s.Size, 8);
+        }
+    }
+
+    private void NormalizeAddAfterSubstructs(OrderedDictionary reordered, Dictionary<string, HashSet<string>> deps, string name)
+    {
+        if (reordered.Contains(name))
+            return;
+        foreach (var dep in deps[name])
+            NormalizeAddAfterSubstructs(reordered, deps, dep);
+        reordered[name] = GetStruct(name);
+    }
+
+    private int NormalizeCalculateBaseOffset(string derivedType, string baseType)
+    {
+        if (derivedType == baseType)
+            return 0;
+        foreach (var b in GetStruct(derivedType)!.Bases)
+        {
+            var baseOff = NormalizeCalculateBaseOffset(b.Type, baseType);
+            if (baseOff >= 0)
+                return b.Offset + baseOff;
+        }
+        return -1;
+    }
+
+    public void Write(string path, bool useYaml)
+    {
+        var data = useYaml
+            ? new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build().Serialize(this)
+            : JsonSerializer.Serialize(this, new JsonSerializerOptions() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true });
         File.WriteAllText(path, data);
     }
 
     public void DumpNestedUnions()
     {
-        foreach (var (name, s) in Structs)
-        {
-            if (s.Fields.All(f => f.Offset == 0))
-                continue; // it's a simple union, we handle that on IDA side
-
+        foreach (var (name, s) in EnumerateStructs().Where(kv => !kv.Data.IsUnion))
             foreach (var g in s.Fields.GroupBy(f => f.Offset))
-            {
                 if (g.Count() > 1)
-                {
-                    var firstType = g.First().Type;
-                    if (!g.All(f => f.Type == firstType))
-                    {
-                        Debug.WriteLine($"Nested union found at {name}+0x{g.Key:X}: {string.Join(", ", g.Select(f => f.Name))}");
-                    }
-                    // else: all elements of the same type, we don't create union for that on IDA side
-                }
-            }
+                    Debug.WriteLine($"Nested union found at {name}+0x{g.Key:X}: {string.Join(", ", g.Select(f => f.Names.First()))}");
+    }
+
+    public void DumpMultipleNames()
+    {
+        foreach (var (ea, g) in Globals.Where(g => g.Value.Names.Count > 1))
+            Debug.WriteLine($"Multiple names for global @ 0x{ea:X}: {string.Join(", ", g.Names)}");
+        foreach (var (ea, f) in Functions.Where(f => f.Value.Names.Count > 1))
+            Debug.WriteLine($"Multiple names for function @ 0x{ea:X}: {string.Join(", ", f.Names)}");
+        foreach (var (name, s) in EnumerateStructs())
+        {
+            foreach (var f in s.Fields.Where(f => f.Names.Count > 1))
+                Debug.WriteLine($"Multiple names for {name} field +0x{f.Offset:X}: {string.Join(", ", f.Names)}");
+            if (s.VTable != null)
+                foreach (var (idx, vf) in s.VTable.VFuncs.Where(f => f.Value.Names.Count > 1))
+                    Debug.WriteLine($"Multiple names for {name} vfunc #{idx}: {string.Join(", ", vf.Names)}");
         }
     }
 
@@ -171,7 +274,7 @@ internal class Result
     {
         Dictionary<ulong, string> uniqueEAs = new();
         Dictionary<string, string> uniqueNames = new();
-        Func<ulong, string, string, bool> validate = (ea, name, text) =>
+        Func<ulong, IEnumerable<string>, string, bool> validate = (ea, names, text) =>
         {
             bool success = true;
             if (ea != 0 && !uniqueEAs.TryAdd(ea, text))
@@ -179,25 +282,30 @@ internal class Result
                 Debug.WriteLine($"Duplicate EA 0x{ea:X}: {text} and {uniqueEAs[ea]}");
                 success = false;
             }
-            if (name.Length > 0 && !uniqueNames.TryAdd(name, text))
+            foreach (var name in names)
             {
-                Debug.WriteLine($"Duplicate name {name}: {text} and {uniqueNames[name]}");
-                success = false;
+                if (!uniqueNames.TryAdd(name, text))
+                {
+                    Debug.WriteLine($"Duplicate name {name}: {text} and {uniqueNames[name]}");
+                    success = false;
+                }
             }
             return success;
         };
 
         bool success = true;
         foreach (var (ea, g) in Globals)
-            success &= validate(ea, g.Name, $"global {g.Name}");
+            success &= validate(ea, g.Names, $"global {g.Names.FirstOrDefault()}");
         foreach (var (ea, f) in Functions)
-            success &= validate(ea, f.Name, $"function {f.Name}");
-        foreach (var (name, s) in Structs)
+            success &= validate(ea, f.Names, $"function {f.Names.FirstOrDefault()}");
+        foreach (var (name, s) in EnumerateStructs())
         {
-            if (s.PrimaryVTable != null)
-                success &= validate(s.PrimaryVTable.Ea, $"vtbl_{name}", $"vtbl_{name}");
-            foreach (var vt in s.SecondaryVTables)
-                success &= validate(vt.Ea, $"vtbl_{name}__{vt.Base}", $"vtbl_{name}__{vt.Base}");
+            if (s.VTable != null)
+            {
+                success &= validate(s.VTable.Ea, new[] { $"vtbl_{name}" }, $"vtbl_{name}");
+                foreach (var vt in s.VTable.Secondary)
+                    success &= validate(vt.Ea, new[] { $"vtbl_{vt.Derived}___{name}" }, $"vtbl_{vt.Derived}___{name}");
+            }
         }
         return success;
     }
@@ -205,7 +313,7 @@ internal class Result
     public bool ValidateLayout()
     {
         bool success = true;
-        foreach (var (name, s) in Structs)
+        foreach (var (name, s) in EnumerateStructs())
         {
             int minFieldOffset = 0;
             foreach (var b in s.Bases)
@@ -218,7 +326,7 @@ internal class Result
                 minFieldOffset = b.Offset + b.Size;
             }
 
-            if (s.PrimaryVTable != null)
+            if (s.VTable != null)
             {
                 minFieldOffset = Math.Max(minFieldOffset, 8);
             }

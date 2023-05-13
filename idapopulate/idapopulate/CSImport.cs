@@ -117,7 +117,7 @@ internal class CSImport
             {
                 if (attrVTable.IsPointer)
                     Debug.WriteLine($"VTable for {type} is stored as a pointer, wtf does it even mean?");
-                s.PrimaryVTable = new() { Address = new(attrVTable.Signature, attrVTable.Offset), Ea = GetResolvedAddress(addresses, "VTable", resolver) };
+                s.VTable = new() { Ea = GetResolvedAddress(addresses, "VTable", resolver), Address = new(attrVTable.Signature, attrVTable.Offset) };
             }
 
             // process methods (both virtual and non-virtual)
@@ -125,8 +125,8 @@ internal class CSImport
             {
                 if (method.GetCustomAttribute<VirtualFunctionAttribute>() is var vfAttr && vfAttr != null)
                 {
-                    s.PrimaryVTable ??= new();
-                    s.PrimaryVTable.VFuncs.Add(vfAttr.Index, new() { Name = method.Name, Signature = ExtractFuncSig(method, tn) });
+                    s.VTable ??= new();
+                    s.VTable.VFuncs.Add(vfAttr.Index, new(method.Name, ExtractFuncSig(method, tn)));
                 }
                 else if (method.GetCustomAttribute<MemberFunctionAttribute>() is var mfAttr && mfAttr != null)
                 {
@@ -136,7 +136,7 @@ internal class CSImport
                     else if (res.Functions.ContainsKey(ea))
                         Debug.WriteLine($"Multiple functions resolve to same address 0x{ea:X}: {type}.{method.Name} sig={mfAttr.Signature} vs. {res.Functions[ea]}");
                     else
-                        res.Functions[ea] = new() { Name = $"{tn}.{method.Name}", Address = new(mfAttr.Signature), Signature = ExtractFuncSig(method, method.IsStatic ? "" : tn) };
+                        res.Functions[ea] = new($"{tn}.{method.Name}", ExtractFuncSig(method, method.IsStatic ? "" : tn), new(mfAttr.Signature));
                 }
                 else if (method.GetCustomAttribute<StaticAddressAttribute>() is var saAttr && saAttr != null)
                 {
@@ -146,7 +146,7 @@ internal class CSImport
                     else if (res.Globals.ContainsKey(ea))
                         Debug.WriteLine($"Multiple globals resolve to same address 0x{ea:X}: {type}.{method.Name} sig={saAttr.Signature}+0x{saAttr.Offset} vs. {res.Globals[ea]}");
                     else
-                        res.Globals[ea] = new() { Type = saAttr.IsPointer ? tn + "*" : tn, Name = $"g_{tn}_{method.Name}", Address = new(saAttr.Signature, saAttr.Offset), Size = saAttr.IsPointer ? 8 : s.Size }; // note: name currently matches idarename
+                        res.Globals[ea] = new($"g_{tn}_{method.Name}", saAttr.IsPointer ? tn + "*" : tn, saAttr.IsPointer ? 8 : s.Size, new(saAttr.Signature, saAttr.Offset)); // note: name currently matches idarename
                 }
             }
 
@@ -158,7 +158,7 @@ internal class CSImport
                 if (off == 0 && f.Name == "VTable")
                 {
                     // this is not a particularly interesting field - just mark struct as having a vtable (if it has neither known vtable address nor known virtual functions) and continue
-                    s.PrimaryVTable ??= new();
+                    s.VTable ??= new();
                     continue;
                 }
 
@@ -212,10 +212,16 @@ internal class CSImport
                     isBaseClass = false;
                 }
 
+                var ftn = TypeName(ftype);
                 if (isBaseClass)
-                    s.Bases.Add(new() { Type = TypeName(ftype), Offset = off, Size = fsize });
+                    s.Bases.Add(new() { Type = ftn, Offset = off, Size = fsize });
+                else if (s.Fields.Find(f => f.Offset == off && f.ArrayLength == arrLen && f.Type == ftn) is var existingField && existingField != null)
+                    existingField.Names.Add(f.Name);
                 else
-                    s.Fields.Add(new() { Name = f.Name, Type = TypeName(ftype), IsStruct = isStruct, Offset = off, ArrayLength = arrLen, Size = fsize });
+                    s.Fields.Add(new(f.Name, ftn, isStruct, off, arrLen, fsize));
+
+                if (isBaseClass && off == 0 && s.VTable != null)
+                    s.VTable.Base = ftn;
 
                 if (off >= nextOff)
                 {
@@ -228,6 +234,8 @@ internal class CSImport
                     prevSize = Math.Max(prevSize, fsize);
                 }
             }
+
+            s.IsUnion = s.VTable == null && s.Bases.Count == 0 && s.Fields.Count > 1 && s.Fields.All(f => f.Offset == 0);
             res.Structs.Add(tn, s);
         }
     }
@@ -322,12 +330,15 @@ internal class CSImport
 
     private Type? DerefPointer(Type type) => type.IsPointer ? type.GetElementType()! : type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Pointer<>) ? type.GetGenericArguments()[0] : null;
 
-    private Result.FuncSig ExtractFuncSig(MethodInfo m, string thisType)
+    private string ExtractFuncSig(MethodInfo m, string thisType)
     {
-        var res = new Result.FuncSig() { RetType = TypeName(m.ReturnType), Arguments = m.GetParameters().Select(p => new Result.FuncArg() { Type = TypeName(p.ParameterType), Name = p.Name ?? "" }).ToList() };
+        var args = string.Join(", ", m.GetParameters().Select(p => $"{TypeName(p.ParameterType)} {p.Name ?? ""}"));
         if (thisType.Length > 0)
-            res.Arguments.Insert(0, new() { Type = thisType + "*", Name = "this" });
-        return res;
+        {
+            var thisArg = $"{thisType}* this";
+            args = args.Length > 0 ? $"{thisArg}, {args}" : thisArg;
+        }
+        return $"{TypeName(m.ReturnType)} {Result.Function.Placeholder}({args})";
     }
 
     private ulong GetResolvedAddress(Type? addresses, string name, SigResolver resolver)

@@ -178,6 +178,11 @@ def add_comment_enum(id, comment, repeatable = False):
 	if not existing or comment not in existing:
 		ida_enum.set_enum_cmt(id, f'{existing}\n{comment}' if existing else comment, repeatable)
 
+def add_comment_member(mptr, comment, repeatable = False):
+	existing = ida_struct.get_member_cmt(mptr.id, repeatable)
+	if not existing or comment not in existing:
+		ida_struct.set_member_cmt(mptr, f'{existing}\n{comment}' if existing else comment, repeatable)
+
 def add_comment_func(func, comment, repeatable = False):
 	existing = ida_funcs.get_func_cmt(func, repeatable)
 	if not existing or comment not in existing:

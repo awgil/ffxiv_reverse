@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.Collections.Specialized" Version="4.3.0" />
     <PackageReference Include="YamlDotNet" Version="13.1.0" />
   </ItemGroup>
 

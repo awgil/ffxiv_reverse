@@ -8,18 +8,22 @@ import ida_xref
 import ida_typeinf
 import ida_struct
 import ida_funcs
+import json
 import yaml
 import os
 import collections
 import datetime
 import itertools
 
-# not import to simplify development - we want to reload my modules if they change
-idaapi.require('ii')
+idaapi.require('ii') # to simplify development, we want to reload my modules if they change
 import ii
 
 def msg(text):
 	print(f'{datetime.datetime.now()} {text}')
+
+# json, unlike yml, always stores keys as strings - but we use int keys in some cases
+def as_int(k):
+	return int(k) if isinstance(k, str) else k
 
 def has_custom_name(ea):
 	name = ida_name.get_ea_name(ea)
@@ -35,18 +39,28 @@ def has_custom_name(ea):
 			return False # string constant: foo => aFoo
 	return True
 
-def set_custom_name(ea, name, sig):
-	if not has_custom_name(ea):
+renamed_eas = {}
+def rename_ea(ea, name):
+	if ea not in renamed_eas:
 		dupEA = ii.find_global_name_ea(name)
-		if dupEA != idaapi.BADADDR:
+		if dupEA == ea:
+			renamed_eas[ea] = {} # already has same name, probably from previous run
+		elif dupEA != idaapi.BADADDR:
 			msg(f'Skipping rename for {hex(ea)}: same name {name} is already used by {hex(dupEA)}')
 			ii.add_comment_ea_auto(ea, f'duplicate name: {name}')
-		elif ida_name.set_name(ea, name) == 0:
-			# no need to write a message, we get a messagebox anyway...
-			ii.add_comment_ea_auto(ea, f'rename failed: {name}')
+		else:
+			if has_custom_name(ea):
+				ii.add_comment_ea_auto(ea, f'original name: {ida_name.get_ea_name(ea)}')
+			if ida_name.set_name(ea, name) == 0:
+				# no need to write a message, we get a messagebox anyway...
+				ii.add_comment_ea_auto(ea, f'rename failed: {name}')
+			else:
+				renamed_eas[ea] = {} # placeholder value
 	elif ida_name.get_ea_name(ea) != name:
-		msg(f'Skipping rename for existing name: {hex(ea)} {ida_name.get_ea_name(ea)} -> {name}')
+		#msg(f'Skipping rename for existing name: {hex(ea)} {ida_name.get_ea_name(ea)} -> {name}')
 		ii.add_comment_ea_auto(ea, f'alt name: {name}')
+
+def add_sig_comment(ea, sig):
 	if sig:
 		ii.add_comment_ea_auto(ea, f'signature: {sig["sig"]} +{sig["sigOffset"]}')
 
@@ -66,37 +80,21 @@ def calc_vtable_length(ea):
 		end += 8
 	return (end - ea) >> 3
 
-def convert_exported_sig(sig, name = None):
-	args = ', '.join(f'{a["type"]} {a["name"]}' for a in sig['arguments'])
-	return f'{sig["retType"]} {name if name else "func"}({args})'
-
+applied_function_types = {}
 def apply_function_type(ea, tinfo):
 	func = ida_funcs.get_func(ea)
 	if not func:
 		raise Exception(f'Function not defined')
+	if ea in applied_function_types:
+		ii.add_comment_func(func, f'alt sig: {tinfo}')
+		return
 	existing = ida_typeinf.print_type(ea, 0)
 	if existing:
-		msg(f'Skipping function type assignment @ {hex(ea)}: {existing} -> {tinfo}')
-		ii.add_comment_func(func, f'alt sig: {tinfo}')
-	elif not ida_typeinf.apply_tinfo(ea, tinfo, 0):
+		#msg(f'Skipping function type assignment @ {hex(ea)}: {existing} -> {tinfo}')
+		ii.add_comment_func(func, f'original sig: {existing}')
+	if not ida_typeinf.apply_tinfo(ea, tinfo, 0):
 		raise Exception(f'Apply failed')
-
-# return offset of the base of specified type, or None if not found
-def find_base_offset(structId, baseId):
-	s = ida_struct.get_struc(structId)
-	if not s or baseId == idaapi.BADADDR:
-		return None
-	offset = 0
-	while True:
-		m = ida_struct.get_member(s, offset)
-		if not m or ida_struct.get_member_name(m.id) != f'baseclass_{offset}':
-			return None
-		op = ida_nalt.opinfo_t()
-		ida_struct.retrieve_member_info(op, m)
-		nestedOffset = 0 if op.tid == baseId else find_base_offset(op.tid, baseId)
-		if nestedOffset != None:
-			return offset + nestedOffset
-		offset += ida_struct.get_member_size(m)
+	applied_function_types[ea] = {}
 
 def populate_static_initializers():
 	msg('*** Populating static initializers ***')
@@ -136,14 +134,33 @@ def populate_static_initializers():
 
 def populate_global_names(data):
 	msg('** Populating exported global names **')
-	for ea, g in data.items():
-		set_custom_name(ea, g['name'], g['address'])
+	for k, g in data['globals'].items():
+		ea = as_int(k)
+		for n in g['names']:
+			rename_ea(ea, n)
+		add_sig_comment(ea, g['address'])
 
 def populate_function_names(data):
 	msg('** Populating exported function names **')
-	for ea, g in data.items():
+	for k, f in data['functions'].items():
+		ea = as_int(k)
 		ensure_function_at(ea, "function") # if function is not referenced from anywhere, define one manually
-		set_custom_name(ea, g['name'], g['address'])
+		for n in f['names']:
+			rename_ea(ea, n)
+		add_sig_comment(ea, f['address'])
+
+def populate_vtable_names(data):
+	msg('** Populating exported vtable names **')
+	for name, s in data['structs'].items():
+		vtable = s['vTable']
+		if not vtable:
+			continue # not interested in classes without vtables
+		primaryEA = vtable['ea']
+		if primaryEA != 0:
+			rename_ea(primaryEA, f'vtbl_{name}')
+			add_sig_comment(primaryEA, vtable['address'])
+		for v in vtable['secondary']:
+			rename_ea(v['ea'], f'vtbl_{v["derived"]}___{name}')
 
 # TODO: calculate masks for bitfield values properly
 def populate_enums(data):
@@ -165,268 +182,206 @@ def populate_enums(data):
 				ii.add_comment_enum(eid, f'could not add field {en} = {ev}')
 				
 	with ii.mass_type_updater(ida_typeinf.UTP_ENUM):
-		for name, e in data.items():
+		for name, e in data['enums'].items():
 			try:
 				populate_enum(name, e['isBitfield'], e['isSigned'], e['width'], e['values'])
 			except Exception as e:
 				msg(f'Enum error: {e}')
 
-# TODO: have c# app generate correctly ordered list
 def populate_vtables(data):
-	# vtable population is done in several passes
-	Vtable = collections.namedtuple("VTable", "primaryEA secondaryEAs vFuncs base")
-	vtables = {}  # base always ordered before derived; key = class name
+	msg('** Populating exported vtables **')
 
-	# first pass: build an ordered set of classes with vtables (base before derived) and assign names for all known addresses
-	# note that we don't immediately calculate vtable size on the off chance that some of the vtables-to-be-renamed has no known xrefs
-	def pass1():
-		msg('** Populating exported vtables: pass 1 **')
-		def populate_vtable(cname):
-			if cname in vtables:
-				return # class already processed, since it's a base of some earlier-defined class
-			cdata = data[cname]
-			primary = cdata['primaryVTable']
-			secondary = cdata['secondaryVTables']
-			bases = cdata['bases']
-			# ensure we process all bases first - both direct and indirect (from secondary vtables) - we might not have correct inheritance chain set up
-			for b in bases:
-				populate_vtable(b['type'])
-			for v in secondary:
-				populate_vtable(v['base'])
-			# if primary base has vtable, this class should have one too
-			# TODO: this should be handled during generation
-			primaryBase = bases[0]['type'] if len(bases) > 0 else None
-			if primaryBase and primaryBase in vtables and not primary:
-				msg(f'Class {cname} has no primary vtable, but has base {bases[0]["type"]} with one')
-				primary = { 'ea': 0, 'address': None, 'vFuncs': [] }
-			if not primary:
-				return # skip, this class has no vtables
-			primaryEA = primary['ea']
-			if primaryEA != 0:
-				set_custom_name(primaryEA, f'vtbl_{cname}', primary['address'])
-			for v in secondary:
-				secEA = v['ea']
-				secBase = v['base']
-				set_custom_name(secEA, f'vtbl_{cname}___{secBase}', None)
-				if secBase in vtables:
-					vtables[secBase].secondaryEAs.append(secEA)
-				else:
-					msg(f'Indirect base {secBase} has no known vtables')
-			vtables[cname] = Vtable(primaryEA, [], primary['vFuncs'], primaryBase)
-		for name in data.keys():
-			populate_vtable(name)
-
-	# second pass: determine vtable sizes and create structures
-	def pass2():
-		msg('** Populating exported vtables: pass 2 **')
-
-		def common_vtable_length(primaryEA, secondaryEAs):
-			primaryLen = calc_vtable_length(primaryEA) if primaryEA != 0 else 0
-			vlen = primaryLen
-			for ea in secondaryEAs:
-				secLen = calc_vtable_length(ea)
-				if vlen == 0:
-					vlen = secLen
-				if primaryLen != 0 and primaryLen != secLen:
-					msg(f'Mismatch between vtable sizes at {hex(primaryEA)} ({primaryLen}) and {hex(ea)} ({secLen})')
-				if vlen == 0 or vlen > secLen:
-					vlen = secLen
-			return vlen
-		
-		def calc_vf_name(vtable, vfuncs, idx):
-			if idx in vfuncs:
-				custom = vfuncs[idx]['name']
-				if not ida_struct.get_member_by_name(vtable, custom):
-					return custom
-				msg(f'Duplicate vtable field {ida_struct.get_struc_name(vtable.id)}.{custom}, using fallback for {idx}')
-			return f'vf{idx}'
-		
-		def create_vtable(cname, vtbl):
-			vlen = common_vtable_length(vtbl.primaryEA, vtbl.secondaryEAs)
+	# for each vtable, we determine its size, create the structure, add crossrefs from structure to instances, and rename functions
+	def common_vtable_length(vtbl):
+		primaryEA = vtbl['ea']
+		primaryLen = calc_vtable_length(primaryEA) if primaryEA != 0 else 0
+		vlen = primaryLen
+		for sec in vtbl['secondary']:
+			secEA = sec['ea']
+			secLen = calc_vtable_length(secEA)
 			if vlen == 0:
-				return # don't bother creating a vtable if there are no instances
+				vlen = secLen
+			if primaryLen != 0 and primaryLen != secLen:
+				msg(f'Mismatch between vtable sizes at {hex(primaryEA)} ({primaryLen}) and {hex(secEA)} ({secLen})')
+			if vlen == 0 or vlen > secLen:
+				vlen = secLen
+		return vlen
+	
+	def calc_vf_names(vtable, vfuncs, idx):
+		names = vfuncs[idx]['names'] if idx in vfuncs else []
+		if len(names) > 0:
+			if not ida_struct.get_member_by_name(vtable, names[0]):
+				return names # all good, use custom names
+			else:
+				msg(f'Duplicate vtable field {ida_struct.get_struc_name(vtable.id)}.{names[0]}, using fallback for {idx}')
+		names.insert(0, f'vf{idx}')
+		return names
+	
+	def create_vtable_instance(vtable, numVFs, ea, prefix, signatures):
+		# note: i feel that creating vtable global is, while correct, makes viewing it slightly worse (not seeing vf offsets etc)
+		# but at very least create custom xref (so that find-refs on vtable struct works)
+		# TODO: reconsider...
+		ida_xref.add_dref(ea, vtable.id, ida_xref.XREF_USER | ida_xref.dr_I)
 
-			# create structure
-			vtable = ii.add_struct(f'{cname}_vtbl')
+		for idx in range(0, numVFs):
+			vfuncEA = ida_bytes.get_qword(ea + idx * 8)
+			vfuncName = ida_name.get_ea_name(vfuncEA)
+			if vfuncName == "_purecall":
+				continue # abstract virtual function
+
+			inner = ida_struct.get_innermost_member(vtable, idx * 8)
+			if not inner:
+				msg(f'Failed to find field for vfunc {idx} of {ida_struct.get_struc_name(vtable.id)}')
+				continue
+			leafName = ida_struct.get_member_name(inner[0].id)
+			if f'.{leafName}' in vfuncName:
+				continue # this function is probably not overridden
+
+			rename_ea(vfuncEA, f'{prefix}.{leafName}')
+			if signatures and idx in signatures:
+				add_sig_comment(vfuncEA, signatures[idx]['address'])
+
+	def populate_vtable(cname, vtbl):
+		vlen = common_vtable_length(vtbl)
+		if vlen == 0:
+			return # don't bother creating a vtable if there are no instances
+
+		# create structure
+		vtable = ii.add_struct(f'{cname}_vtbl')
+		if not vtable:
+			raise Exception(f'Failed to create vtable structure for {cname}')
+
+		# add base, if any
+		primaryBase = vtbl['base']
+		if primaryBase and not ii.add_struct_baseclass(vtable, f'{primaryBase}_vtbl'):
+			msg(f'Failed to add base for vtable for {cname}')
+
+		# check that all custom vfuncs are in range
+		firstNewVF = ida_struct.get_struc_size(vtable) >> 3
+		vfuncs = {} # this always has ints as keys
+		for k, vf in vtbl['vFuncs'].items():
+			idx = as_int(k)
+			if idx < firstNewVF:
+				msg(f'Class {cname} overrides vfunc {idx} inherited from base {primaryBase}')
+			elif idx >= vlen:
+				msg(f'Class {cname} defines vfunc {idx} which is outside bounds ({vlen})')
+			else:
+				vfuncs[idx] = vf
+
+		# add fields
+		for idx in range(firstNewVF, vlen):
+			names = calc_vf_names(vtable, vfuncs, idx)
+			if not ii.add_struct_member_ptr(vtable, idx << 3, names[0]):
+				msg(f'Failed to add vfunc {idx} to vtable {cname}')
+			else:
+				for n in names[1:]:
+					ii.add_comment_member(ida_struct.get_member(vtable, idx << 3), f'alt name: {n}')
+		#ida_struct.save_struc(vtable)
+
+		# process vtable instances
+		primaryEA = vtbl['ea']
+		if primaryEA != 0:
+			create_vtable_instance(vtable, vlen, primaryEA, cname, vfuncs)
+		for sec in vtbl['secondary']:
+			create_vtable_instance(vtable, vlen, sec['ea'], f'{sec["derived"]}___{cname}', None)
+
+	# this assumes that structures are ordered correctly, so vtable of the base is always created before vtable of derived
+	with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
+		for name, s in data['structs'].items():
+			vtable = s['vTable']
 			if not vtable:
-				raise Exception(f'Failed to create vtable structure for {cname}')
+				continue
+			try:
+				populate_vtable(name, vtable)
+			except Exception as e:
+				msg(f'Create vtable error: {e}')
 
-			# add base, if any
-			if vtbl.base and not ii.add_struct_baseclass(vtable, f'{vtbl.base}_vtbl'):
-				msg(f'Failed to add base for vtable for {cname}')
-
-			# check that all custom vfuncs are in range
-			firstNewVF = ida_struct.get_struc_size(vtable) >> 3
-			for idx in vtbl.vFuncs.keys():
-				if idx < firstNewVF:
-					msg(f'Class {cname} overrides vfunc {idx} inherited from base {vtbl.base}')
-				elif idx >= vlen:
-					msg(f'Class {cname} defines vfunc {idx} which is outside bounds ({vlen})')
-
-			# add fields
-			for idx in range(firstNewVF, vlen):
-				name = calc_vf_name(vtable, vtbl.vFuncs, idx)
-				if not ii.add_struct_member_ptr(vtable, idx << 3, name):
-					msg(f'Failed to add vfunc {idx} to vtable {cname}')
-			#ida_struct.save_struc(vtable)
-
-		with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
-			for cname, vtbl in vtables.items():
-				try:
-					create_vtable(cname, vtbl)
-				except Exception as e:
-					msg(f'Create vtable error: {e}')
-
-	# third pass: rename functions, add crossrefs for vtable instances
-	# the only reason to split it into separate pass is to do it outside mass type update
-	def pass3():
-		msg('** Populating exported vtables: pass 3 **')
-
-		def create_vtable_instance(vtable, numVFs, ea, prefix, signatures):
-			# note: i feel that creating vtable global is, while correct, makes viewing it slightly worse (not seeing vf offsets etc)
-			# but at very least create custom xref (so that find-refs on vtable struct works)
-			# TODO: reconsider...
-			ida_xref.add_dref(ea, vtable.id, ida_xref.XREF_USER | ida_xref.dr_I)
-
-			for idx in range(0, numVFs):
-				vfuncEA = ida_bytes.get_qword(ea + idx * 8)
-				vfuncName = ida_name.get_ea_name(vfuncEA)
-				if vfuncName == "_purecall":
-					continue # abstract virtual function
-
-				inner = ida_struct.get_innermost_member(vtable, idx * 8)
-				if not inner:
-					msg(f'Failed to find field for vfunc {idx} of {cname}')
-					continue
-				leafName = ida_struct.get_member_name(inner[0].id)
-				if f'.{leafName}' in vfuncName:
-					continue # this function is probably not overridden
-
-				set_custom_name(vfuncEA, f'{prefix}.{leafName}', signatures[idx]['address'] if signatures and idx in signatures else None)
-
-		for cname, vtbl in vtables.items():
-			vtable = ii.get_struct_by_name(f'{cname}_vtbl')
-			numVFs = ida_struct.get_struc_size(vtable) >> 3
-
-			if vtbl.primaryEA != 0:
-				create_vtable_instance(vtable, numVFs, vtbl.primaryEA, cname, vtbl.vFuncs)
-			for ea in vtbl.secondaryEAs:
-				create_vtable_instance(vtable, numVFs, ea, ida_name.get_ea_name(ea)[5:], None) # remove vtbl_ prefix, leaving derived___cname
-
-	pass1()
-	pass2()
-	pass3()
-	return vtables
-
-# TODO: if all fields are at offset 0, just create union directly
-# TODO: if all fields in the nested union are of the same type, don't create a union, instead just add member comment with alt names
-# TODO: have c# app generate correctly ordered list
 def populate_structs(data):
-	# structure creation is done in two passes
-	res = {} # base/substruct always ordered before referencing struct; key = class name
+	msg('** Populating exported structs **')
 
-	# first pass: build an ordered set of structures (base/subfield before containing structures) and create empty structs
-	# these empty structs can be used as a kind of 'forward declarations' for pointers
-	def pass1():
-		msg('** Populating exported structs: pass 1 **')
-		def populate_struct(cname):
-			if cname in res:
-				return # class already processed, since it's a base/substruct of some earlier-defined class
-			cdata = data[cname]
-			# ensure we process all bases and struct fields first
-			for b in cdata['bases']:
-				populate_struct(b['type'])
-			for f in cdata['fields']:
-				if f['isStruct']:
-					populate_struct(f['type'])
-			res[cname] = cdata # tbd
-			# add struct
-			s = ii.add_struct(cname)
-			if not s:
-				raise Exception(f'Failed to create structure {cname}')
-
-		with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
-			for name in data.keys():
-				try:
-					populate_struct(name)
-				except Exception as e:
-					msg(f'Struct create error: {e}')
-				
-	# second pass: fill structure bases and fields
-	def pass2():
-		msg('** Populating exported structs: pass 2 **')
-
-		def add_base(s, type, offset, size):
-			curSize = ida_struct.get_struc_size(s)
-			if curSize != offset:
-				# treat this as a warning...
-				msg(f'Unexpected offset for {ida_struct.get_struc_name(s.id)} base {type}: expected {hex(offset)}, got {hex(curSize)}')
-			if not ii.add_struct_baseclass(s, type):
-				msg(f'Failed to add {ida_struct.get_struc_name(s.id)} base {type}')
-				return
+	def add_base(s, type, offset, size):
+		curSize = ida_struct.get_struc_size(s)
+		if curSize != offset:
+			# treat this as a warning...
+			msg(f'Unexpected offset for {ida_struct.get_struc_name(s.id)} base {type}: expected {hex(offset)}, got {hex(curSize)}')
+		if not ii.add_struct_baseclass(s, type):
+			msg(f'Failed to add {ida_struct.get_struc_name(s.id)} base {type}')
+			return
+		if size != 0:
 			actualSize = ida_struct.get_member_size(ida_struct.get_member(s, curSize))
 			if actualSize != size:
 				msg(f'Unexpected size for {ida_struct.get_struc_name(s.id)} base {type}: expected {hex(size)}, got {hex(actualSize)}')
-			
-		def add_vptr(s, vtname):
-			if not ii.add_struct_member_ptr(s, 0, "__vftable"):
-				msg(f'Failed to add vtable pointer to {ida_struct.get_struc_name(s.id)}')
-			elif not ii.set_struct_member_by_offset_type(s, 0, vtname + '*' if ida_struct.get_struc_id(vtname) != idaapi.BADADDR else 'void*'):
-				msg(f'Failed to set vtable pointer type for {ida_struct.get_struc_name(s.id)} (vtbl-struct-id={hex(ida_struct.get_struc_id(vtname))})')
 
-		def add_field(s, offset, fdata, checkSize):
-			name = fdata['name']
-			type = fdata['type']
-			arrLen = fdata['arrayLength']
-			if fdata['isStruct']:
-				success = ii.add_struct_member_substruct(s, offset, name, type, arrLen if arrLen > 0 else 1)
-			else:
-				typeSuffix = f'[{arrLen}]' if arrLen > 0 else ''
-				success = ii.add_struct_member_typed(s, offset, name, type + typeSuffix)
+	def add_vptr(s, vtname):
+		if not ii.add_struct_member_ptr(s, 0, "__vftable"):
+			msg(f'Failed to add vtable pointer to {ida_struct.get_struc_name(s.id)}')
+		elif not ii.set_struct_member_by_offset_type(s, 0, vtname + '*' if ida_struct.get_struc_id(vtname) != idaapi.BADADDR else 'void*'):
+			msg(f'Failed to set vtable pointer type for {ida_struct.get_struc_name(s.id)} (vtbl-struct-id={hex(ida_struct.get_struc_id(vtname))})')
 
-			if not success:
-				msg(f'Failed to add field {ida_struct.get_struc_name(s.id)}.{name}')
-			elif checkSize:
-				actualSize = ida_struct.get_member_size(ida_struct.get_member(s, offset))
-				expectedSize = fdata['size']
-				if actualSize != expectedSize:
-					msg(f'Unexpected size for {ida_struct.get_struc_name(s.id)}.{name}: expected {hex(expectedSize)}, got {hex(actualSize)}')
+	def add_field(s, offset, fdata):
+		names = fdata['names']
+		type = fdata['type']
+		arrLen = fdata['arrayLength']
+		if fdata['isStruct']:
+			success = ii.add_struct_member_substruct(s, offset, names[0], type, arrLen if arrLen > 0 else 1)
+		else:
+			typeSuffix = f'[{arrLen}]' if arrLen > 0 else ''
+			success = ii.add_struct_member_typed(s, offset, names[0], type + typeSuffix)
+		if not success:
+			msg(f'Failed to add field {ida_struct.get_struc_name(s.id)}.{names[0]}')
+			return
+		member = ida_struct.get_member(s, offset)
+		for n in names[1:]:
+			ii.add_comment_member(member, f'alt name: {n}')
+		if not ida_struct.is_union(s.id):
+			actualSize = ida_struct.get_member_size(member)
+			expectedSize = fdata['size']
+			if actualSize != expectedSize:
+				msg(f'Unexpected size for {ida_struct.get_struc_name(s.id)}.{names[0]}: expected {hex(expectedSize)}, got {hex(actualSize)}')
 
-		with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
-			for cname, cdata in res.items():
-				s = ii.get_struct_by_name(cname)
-				if not s:
+	# structure creation is done in two passes: we first create empty structs, they can then be used as a kind of 'forward declarations' for pointer types
+	with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
+		for name, s in data['structs'].items():
+			if not ii.add_struct(name, s['isUnion']):
+				msg(f'Failed to create structure {name}')
+
+	# note: we commit changes before second pass, to ensure that setting types works correctly
+	with ii.mass_type_updater(ida_typeinf.UTP_STRUCT):
+		for cname, cdata in data['structs'].items():
+			s = ii.get_struct_by_name(cname)
+			if not s:
+				continue
+			isUnion = cdata['isUnion']
+			# start with bases (if any)
+			for b in cdata['bases']:
+				add_base(s, b['type'], b['offset'], b['size'])
+			# now add primary vtable, if needed
+			if ida_struct.get_struc_size(s) == 0 and cdata['vTable']:
+				add_vptr(s, cname + '_vtbl')
+			# now add fields
+			for offset, fgroup in itertools.groupby(cdata['fields'], lambda f: f['offset']):
+				if offset < ida_struct.get_struc_size(s):
+					msg(f'Unexpected offset for {cname}+{hex(offset)}, current size if {ida_struct.get_struc_size(s)}')
 					continue
-				# start with bases (if any)
-				for b in cdata['bases']:
-					add_base(s, b['type'], b['offset'], b['size'])
-				# now add primary vtable, if needed
-				if ida_struct.get_struc_size(s) == 0 and cdata['primaryVTable']:
-					add_vptr(s, cname + '_vtbl')
-				# now add fields
-				for offset, fgroup in itertools.groupby(cdata['fields'], lambda f: f['offset']):
-					if offset < ida_struct.get_struc_size(s):
-						msg(f'Unexpected offset for {cname}+{hex(offset)}, current size if {ida_struct.get_struc_size(s)}')
-						continue
-					flist = [f for f in fgroup] # group can only be iterated over once
-					if len(flist) == 1:
-						add_field(s, offset, flist[0], True)
-					else:
-						uname = f'union{hex(offset)[2:]}'
-						su = ii.add_struct(f'{cname}_{uname}', True)
-						for f in flist:
-							add_field(su, 0, f, False)
-						ii.add_struct_member_substruct(s, offset, uname, f'{cname}_{uname}')
-				# add tail, if structure is larger than last field
+				flist = [f for f in fgroup] # group can only be iterated over once
+				if isUnion or len(flist) == 1:
+					add_field(s, offset, flist[0])
+				else:
+					uname = f'union{hex(offset)[2:]}'
+					su = ii.add_struct(f'{cname}_{uname}', True)
+					for f in flist:
+						add_field(su, 0, f)
+					ii.add_struct_member_substruct(s, offset, uname, f'{cname}_{uname}')
+			# add tail, if structure is larger than last field
+			expectedSize = cdata['size']
+			if expectedSize != 0:
 				finalSize = ida_struct.get_struc_size(s)
-				expectedSize = cdata['size']
 				if finalSize > expectedSize:
 					msg(f'Structure {cname} is too large: {hex(finalSize)} > {hex(expectedSize)}')
-				elif finalSize < expectedSize and not ii.add_struct_member_byte(s, finalSize, f'tail_{hex(finalSize)[2:]}', expectedSize - finalSize):
-					msg(f'Failed to extend structure {cname}')
-
-	pass1()
-	pass2()
+				elif finalSize < expectedSize:
+					success = ii.add_struct_member_byte(s, 0, 'padding', expectedSize) if isUnion else ii.add_struct_member_byte(s, finalSize, f'field_{hex(finalSize)[2:]}', expectedSize - finalSize)
+					if not success:
+						msg(f'Failed to extend structure {cname}')
 
 def populate_global_types(data):
 	msg('** Populating exported global types **')
@@ -444,14 +399,14 @@ def populate_global_types(data):
 			if nameEA > ea and nameEA < ea + actualSize:
 				msg(f'Existing global {name} is now a part of global {type} @ {hex(ea)} at offset {hex(nameEA - ea)}')
 		if not ida_typeinf.apply_tinfo(ea, tif, 0):
-			msg(f'Failed to apply {type} @ {hex(ea)}')
-			return 0
+			raise Exception(f'Failed to apply {type} @ {hex(ea)}')
 		return actualSize
 
 	minEA = 0
-	for ea, g in data.items():
+	for k, g in data['globals'].items():
+		ea = as_int(k)
 		if ea < minEA:
-			msg(f'Skipping global {g["type"]} {g["name"]} @ {hex(ea)}, since it is a part of another global')
+			msg(f'Skipping global {g["type"]} {g["names"][0]} @ {hex(ea)}, since it is a part of another global')
 			continue # this global was already consumed by another global
 
 		minEA = ea
@@ -462,30 +417,32 @@ def populate_global_types(data):
 
 def populate_function_types(data):
 	msg('** Populating exported function types **')
-	for ea, f in data.items():
-		sig = f['signature']
+	for k, f in data['functions'].items():
+		ea = as_int(k)
+		sig = f['type']
 		if not sig:
 			continue
-		tif = ii.parse_cdecl(convert_exported_sig(sig))
+		tif = ii.parse_cdecl(sig.replace('^', '__fastcall func'))
 		try:
 			apply_function_type(ea, tif)
 		except Exception as e:
 			msg(f'Failed to apply function type {tif} @ {hex(ea)}: {e}')
 
-def populate_vfunc_types(vtables):
+def populate_vfunc_types(data):
 	msg('** Populating exported virtual function types **')
 
-	def update_vtable_fields(cname, vtable, vtbl):
-		for idx, vfunc in vtbl.vFuncs.items():
-			sig = vfunc['signature']
+	def update_vtable_fields(vtable, vfuncs):
+		for k, vfunc in vfuncs.items():
+			sig = vfunc['type']
 			if not sig:
 				continue
+			idx = as_int(k)
 			m = ida_struct.get_member(vtable, idx * 8)
 			if not m or ida_struct.get_member_name(m.id) == 'baseclass_0':
 				continue
-			type = convert_exported_sig(sig, '(*)')
+			type = sig.replace('^', '(__fastcall *)')
 			if not ii.set_struct_member_type(vtable, m, type):
-				msg(f'Failed to set vtable {cname} entry #{idx} type to {type}')
+				msg(f'Failed to set vtable {ida_struct.get_struc_name(vtable.id)} entry #{idx} type to {type}')
 
 	def propagate_vfunc_type(eaRef, tinfo, cname, shift):
 		vfuncEA = ida_bytes.get_qword(eaRef)
@@ -518,7 +475,7 @@ def populate_vfunc_types(vtables):
 		except Exception as e:
 			msg(f'Failed to apply virtual function type {tinfo} @ {hex(vfuncEA)}: {e}')
 
-	def propagate_types_to_instances(cname, vtable, vtbl):
+	def propagate_types_to_instances(cname, vdata, vtable):
 		numVFs = ida_struct.get_struc_size(vtable) >> 3
 		for idx in range(numVFs):
 			inner = ida_struct.get_innermost_member(vtable, idx * 8)
@@ -526,34 +483,36 @@ def populate_vfunc_types(vtables):
 			if not itype or not itype.is_funcptr():
 				continue
 			itype = ida_typeinf.remove_pointer(itype)
-			if vtbl.primaryEA != 0:
-				propagate_vfunc_type(vtbl.primaryEA + idx * 8, itype, cname, 0)
-			for ea in vtbl.secondaryEAs:
-				derivedName = ida_name.get_ea_name(ea)[5:-3-len(cname)] # remove vtbl_ prefix and ___cname suffix, leaving derived
-				shift = find_base_offset(ida_struct.get_struc_id(derivedName), ida_struct.get_struc_id(cname))
-				propagate_vfunc_type(ea + idx * 8, itype, derivedName, shift if shift != None else -1)
+			primaryEA = vdata['ea']
+			if primaryEA != 0:
+				propagate_vfunc_type(primaryEA + idx * 8, itype, cname, 0)
+			for sec in vdata['secondary']:
+				propagate_vfunc_type(sec['ea'] + idx * 8, itype, sec['derived'], sec['offset'])
 
-	for cname, vtbl in vtables.items():
-		vtable = ii.get_struct_by_name(f'{cname}_vtbl')
+	for cname, cdata in data['structs'].items():
+		vdata = cdata['vTable']
+		vtable = ii.get_struct_by_name(f'{cname}_vtbl') if vdata else None
 		if not vtable:
 			continue
-		update_vtable_fields(cname, vtable, vtbl)
-		propagate_types_to_instances(cname, vtable, vtbl)
+		update_vtable_fields(vtable, vdata['vFuncs'])
+		propagate_types_to_instances(cname, vdata, vtable)
 
-def populate_exported(yamlName):
-	msg(f'*** Populating exported items from {yamlName} ***')
-	with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), yamlName), 'r') as fd:
-		data = yaml.safe_load(fd)
-	populate_global_names(data['globals'])
-	populate_function_names(data['functions'])
-	populate_enums(data['enums'])
-	vtables = populate_vtables(data['structs'])
-	populate_structs(data['structs'])
-	populate_global_types(data['globals'])
-	populate_function_types(data['functions'])
-	populate_vfunc_types(vtables)
+def populate_exported(fileName, isYaml):
+	msg(f'*** Populating exported items from {fileName} ***')
+	# note: I found that parsing json is orders of magnitude faster than yaml :(
+	with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), fileName), 'r') as fd:
+		data = yaml.safe_load(fd) if isYaml else json.load(fd)
+	populate_global_names(data)
+	populate_function_names(data)
+	populate_vtable_names(data)
+	populate_enums(data)
+	populate_vtables(data) # vtable population kind-of requires populated global/vtable names (otherwise conceivably vtable can have no refs, which would make us determine size of preceeding vtable incorrectly)
+	populate_structs(data) # structs require existence of vtable types
+	populate_global_types(data) # this and below requires all types to be defined
+	populate_function_types(data)
+	populate_vfunc_types(data)
 
 breakpoint()
 populate_static_initializers()
-populate_exported('info.yml')
+populate_exported('info.json', False)
 msg('*** Finished! ***')

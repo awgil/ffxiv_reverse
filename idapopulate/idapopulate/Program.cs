@@ -13,7 +13,6 @@ var resolver = new SigResolver(gameRoot + "\\ffxiv_dx11.exe");
 
 var res = new Result();
 new CSImport().Populate(res, resolver);
-res.DumpNestedUnions();
 
 var dataYml = PathUtils.FindFileAmongParents("/FFXIVClientStructs/ida/data.yml");
 if (dataYml != null)
@@ -21,6 +20,13 @@ if (dataYml != null)
 else
     Debug.WriteLine("Failed to find data.yml");
 
+res.Normalize();
+
+// TODO: validate that all referenced bases are really (in)direct bases
 res.ValidateUniqueEaName();
 res.ValidateLayout();
-res.Write(outDir.FullName + "/info.yml");
+
+res.DumpNestedUnions();
+res.DumpMultipleNames();
+
+res.Write(outDir.FullName + "/info.json", false);
