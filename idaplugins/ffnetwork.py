@@ -99,7 +99,7 @@ packet_names = {
 	279: 'UpdateClassInfoBozja',
 	280: 'PlayerSetup',
 	281: 'PlayerStats',
-	281: 'FirstAttack',
+	282: 'FirstAttack',
 	283: 'PlayerStateFlags',
 	284: 'PlayerClassInfo',
 	286: 'ModelEquip',
