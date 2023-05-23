@@ -268,6 +268,8 @@ class ffnetwork(idaapi.plugin_t):
 	wanted_name = 'ffnetwork'
 	wanted_hotkey = ''
 
+	_unknown_in_output = False
+
 	def init(self):
 		return idaapi.PLUGIN_OK
 
@@ -306,8 +308,10 @@ class ffnetwork(idaapi.plugin_t):
 				continue
 			opcodemap[index] = case
 		for k, v in sorted(opcodemap.items()):
-			name = packet_names[k] if k in packet_names else f'Packet{k}'
-			print(f'{name} = {hex(v)}')
+			if k in packet_names:
+				print(f'{packet_names[k]} = 0x{v:0{4}X},')
+			elif self._unknown_in_output:
+				print(f'Packet{k} = 0x{v:0{4}X},')
 
 	def term(self):
 		pass
