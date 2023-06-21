@@ -11,6 +11,7 @@ packet_names = {
 	13: 'CFDutyInfo', # note: could be +1
 	14: 'CFNotify', # note: could be +1
 	18: 'CFPreferredRole', # note: could be +1
+	26: 'PartyFinderListing', # note: index packet 19 ~ 48 are UI related
 	81: 'CrossWorldLinkshellList', # note: could be +1
 	89: 'FellowshipList', # note: could be +1
 	111: 'Playtime', # note: could be +1
